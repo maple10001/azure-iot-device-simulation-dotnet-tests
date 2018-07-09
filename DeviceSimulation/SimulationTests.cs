@@ -1,9 +1,8 @@
-﻿using System;
+﻿// Copyright (c) Microsoft. All rights reserved.
+
 using System.Collections.Generic;
 using System.Net;
-using System.Text.RegularExpressions;
 using Helpers.Http;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -56,32 +55,6 @@ namespace DeviceSimulation
             JArray items = (JArray)jsonResponse["Items"];
             
             Assert.True(items.Count >= 0);
-        }
-
-        /// <summary>
-        /// Simulation service should return a list of device models
-        /// </summary>
-        [Fact]
-        public void Should_Return_A_List_Of_DeviceModels()
-        {
-            // Arrange
-            const int STOCKMODELS = 10;
-
-            // Act
-            var request = new HttpRequest(DS_ADDRESS + "/devicemodels");
-            request.AddHeader("X-Foo", "Bar");
-            var response = this.httpClient.GetAsync(request).Result;
-
-            // Assert
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-            JObject jsonResponse = JObject.Parse(response.Content);
-
-            Assert.True(jsonResponse.HasValues);
-
-            JArray items = (JArray)jsonResponse["Items"];
-
-            Assert.True(items.Count >= STOCKMODELS);
         }
 
         /// <summary>
@@ -189,7 +162,7 @@ namespace DeviceSimulation
                     ConnectionString: 'default'
                 }
             }");
-            IHttpResponse postResponse = this.Create_A_Simulation_In_Storage(simulation);
+            IHttpResponse postResponse = this.CreateSimulation(simulation);
             JObject postJsonResponse = JObject.Parse(postResponse.Content);
             string id = (string)postJsonResponse["Id"];
 
@@ -233,7 +206,7 @@ namespace DeviceSimulation
                     ConnectionString: 'default'
                 }
             }");
-            IHttpResponse postResponse = this.Create_A_Simulation_In_Storage(simulation);
+            IHttpResponse postResponse = this.CreateSimulation(simulation);
             JObject postJsonResponse = JObject.Parse(postResponse.Content);
             string id = (string)postJsonResponse["Id"];
 
@@ -249,6 +222,9 @@ namespace DeviceSimulation
                 }
             ]";
 
+            IHttpResponse upsertResponse = this.CreateSimulation(simulation);
+            JObject upsertJsonResponse = JObject.Parse(postResponse.Content);
+
             // Act
             var request = new HttpRequest(DS_ADDRESS + $"/simulations/{id}");
             request.AddHeader("X-Foo", "Bar");
@@ -261,11 +237,177 @@ namespace DeviceSimulation
 
             Assert.True(jsonResponse.HasValues);
 
-            foreach (KeyValuePair<string, JToken> sourceProperty in postJsonResponse)
+            foreach (KeyValuePair<string, JToken> sourceProperty in upsertJsonResponse)
             {
                 JProperty targetProp = jsonResponse.Property(sourceProperty.Key);
                 Assert.True(JToken.DeepEquals(sourceProperty.Value, targetProp.Value));
             }
+        }
+
+        /// <summary>
+        /// Simulation service should return Conflict when etag doesn't match 
+        /// in upserting a simulation
+        /// </summary>
+        [Fact]
+        public void Should_Return_Conflict_When_ETag_Does_Not_Match_In_Upserting()
+        {
+            // Arrage
+            var simulation = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'DeviceModels': [  
+                    {  
+                        'Id': 'model_1',
+                        'Count': 150
+                    }
+                ],
+                'IoTHub': {
+                    ConnectionString: 'default'
+                }
+            }");
+            IHttpResponse postResponse = this.CreateSimulation(simulation);
+            JObject postJsonResponse = JObject.Parse(postResponse.Content);
+            string id = (string)postJsonResponse["Id"];
+
+            IHttpResponse upsertResponse = this.CreateSimulation(simulation);
+            JObject upsertJsonResponse = JObject.Parse(postResponse.Content);
+
+            // Act
+            var request = new HttpRequest(DS_ADDRESS + $"/simulations/{id}");
+            request.AddHeader("Content-Type", "application/json");
+            request.SetContent(simulation);
+            var response = this.httpClient.PutAsync(request).Result;
+
+            // Assert
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        }
+
+        /// <summary>
+        /// Simulation service should return bad request when failed to provide
+        /// valid start time and end time
+        /// </summary>
+        [Fact]
+        public void Should_Return_Badrequest_With_Invalid_StartTime_And_EndTime()
+        {
+            // Arrage
+            var endTimeBeforeStartTime = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'StartTime': 'Now+P1D',
+                'EndTime': 'Now',
+                'DeviceModels': [
+                    {  
+                        'Id': 'model_1',
+                        'Count': 150
+                    }
+                ],
+                'IoTHub': {
+                    ConnectionString: 'default'
+                }
+            }");
+
+            var invalidTimeFormat = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'StartTime': 'invalid time',
+                'EndTime': 'invalid time',
+                'DeviceModels': [
+                    {  
+                        'Id': 'model_1',
+                        'Count': 150
+                    }
+                ],
+                'IoTHub': {
+                    ConnectionString: 'default'
+                }
+            }");
+
+            // Act
+            var response = this.CreateSimulation(endTimeBeforeStartTime);
+            var response_1 = this.CreateSimulation(invalidTimeFormat);
+
+            // Assert
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, response_1.StatusCode);
+        }
+
+        /// <summary>
+        /// Simulation service should return bad request when failed to provide
+        /// valid device models
+        /// </summary>
+        [Fact]
+        public void Should_Return_Badrequest_With_Invalid_DeviceModels()
+        {
+            // Arrage
+            var zeroDeviceModels = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'DeviceModels': [],
+                'IoTHub': {
+                    ConnectionString: 'default'
+                }
+            }");
+
+            var totalDeviceCountIsZero = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'DeviceModels': [
+                    {
+                        'Id': 'model_1',
+                        'Count': 0
+                    },
+                    {
+                        'Id': 'model_2',
+                        'Count': 0
+                    }
+                ],
+                'IoTHub': {
+                    ConnectionString: 'default'
+                }
+            }");
+
+            // Act
+            var response = this.CreateSimulation(zeroDeviceModels);
+            var response_1 = this.CreateSimulation(totalDeviceCountIsZero);
+
+            // Assert
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, response_1.StatusCode);
+        }
+
+        /// <summary>
+        /// Simulation service should return bad request when failed to provide
+        /// valid iothub
+        /// </summary>
+        [Fact]
+        public void Should_Return_Badrequest_With_Invalid_IotHub()
+        {
+            // Arrage
+            var invalidSimulation = JObject.Parse(@"{  
+                'ETag': 'etag',
+                'Enabled': false,
+                'Name': 'simulation test',
+                'DeviceModels': [
+                    {  
+                        'Id': 'model_1',
+                        'Count': 150
+                    }
+                ],
+                'IoTHub': {
+                    ConnectionString: 'invalid string'
+                }
+            }");
+
+            // Act
+            var response = this.CreateSimulation(invalidSimulation);
+
+            // Assert
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         }
 
         /// <summary>
@@ -289,7 +431,7 @@ namespace DeviceSimulation
                     ConnectionString: 'default'
                 }
             }");
-            IHttpResponse postResponse = this.Create_A_Simulation_In_Storage(simulation);
+            IHttpResponse postResponse = this.CreateSimulation(simulation);
             JObject postJsonResponse = JObject.Parse(postResponse.Content);
             string id = (string)postJsonResponse["Id"];
 
@@ -302,7 +444,7 @@ namespace DeviceSimulation
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
 
-        private IHttpResponse Create_A_Simulation_In_Storage(JObject simulation)
+        private IHttpResponse CreateSimulation(JObject simulation)
         {
             
             var request = new HttpRequest(DS_ADDRESS + "/simulations");
